@@ -22,37 +22,36 @@ def init_db() -> None:
     conn = get_connection()
     try:
         conn.executescript("""
-                           CREATE TABLE IF NOT EXIST api_keys (
-                           id INTEGER PRIMARY KEY AUTOINCREMENT,
-                           key TEXT NOT NULL UNIQUE,
-                           owner TEXT NOT NULL,
-                           created_at TEXT NOT NULL DEFUALT (datetime('now'))
-                           );
-                           
-                           CREATE TABLE IF NOT EXISTS decks (
-                           id INTEGER PRIMARY KEY AUTOINCREMENT,
-                           owner_key TEXT NOT NULL,
-                           name TEXT NOT NULL,
-                            created_at TEXT NOT NULL DEFUALT (datetime('now')),
-                           FOREIGN KEY (owner_key) REFERENCES api_keys(key) ON DELETE CASCADE
-                           ):
-                           
-                           CREATE TABLEIF NOT EXISTS cards (
-                           id INTEGER PRIMARY KEY AUTOINCREMENT,
-                           deck_id INTEGER NOT NULL,
-                           front TEXT NOT NULL,
-                           back TEXT NOT NULL,
-                           due_at TEXT NOT NULL DEFUALT (datetime('now')),
-                           interval_days INTEGER NOT NULL DEFUALT 0,
-                           ease REAL NOT NULL DEFUALT 2.5,
-                           created_at TEXT NOT NULL DEFUALT (datetime('now')),
-                           FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
-                           );
-                           """)
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                owner TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS decks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (owner_key) REFERENCES api_keys(key) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deck_id INTEGER NOT NULL,
+                front TEXT NOT NULL,
+                back TEXT NOT NULL,
+                due_at TEXT NOT NULL DEFAULT (datetime('now')),
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                ease REAL NOT NULL DEFAULT 2.5,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
+            );
+        """)
         conn.commit()
     finally:
-       conn.close()
-
+        conn.close()
 
 def create_api_key(owner: str) -> str:
     key = secrets.token_hex(16)
@@ -87,7 +86,7 @@ def log_rating(card_id: int, rating: int, api_key: str) -> None:
             f"card={card_id} rating={rating} key={api_key}\n"
         )
 
-def update_deck_stats(deck_id: int) ->:
+def update_deck_stats(deck_id: int) -> None:
     conn = get_connection()
     try:
         row = conn.execute(
@@ -130,7 +129,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="FLASH CARD STUDY API",
-    description="I think you know how flash cards work"
+    description="I think you know how flash cards work",
     version="0.0.1",
     lifespan=lifespan,
 )

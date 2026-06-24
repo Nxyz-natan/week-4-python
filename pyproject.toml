@@ -1,0 +1,11 @@
+  [build-system]
+  requires = ["hatchling"]
+  build-backend = "hatchling.build"
+
+  [project]
+  name = "resolution_week4_nxyz109"
+  version = "0.0.1"
+  dependencies = ["fastapi[standard]", "slowapi"]
+
+  [project.scripts]
+  my-api = "resolution_week4_nxyz109.main:main"
