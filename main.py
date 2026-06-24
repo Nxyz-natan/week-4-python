@@ -87,5 +87,64 @@ def log_rating(card_id: int, rating: int, api_key: str) -> None:
             f"card={card_id} rating={rating} key={api_key}\n"
         )
 
-def update_deck
+def update_deck_stats(deck_id: int) ->:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, AVG(ease) AS avg_ease FROM cards WHERE deck_id = ?",
+            (deck_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    with open("stats.log", "a") as f:
+        f.write(
+            f"{datetime.datetime.now().isoformat()} - "
+            f"deck={deck_id} cards={row['n']} avg_ease ={row['avg_ease']:.3f}\n"
+        )
+
+
+class RegisterBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+
+class DeckBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+
+
+class CardBody(BaseModel):
+    front: str = Field(..., min_length=1)
+    back: str = Field(..., min_length=1)
+
+class RateBody(BaseModel):
+    rating: int = Field(..., ge=1, le=4)
+
+
+def get_api_key_for_limiter(request: Request) -> str:
+    return request.headers.get("x-api-key", "anonymous")
+
+limiter = Limiter(key_func=get_api_key_for_limiter)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(
+    title="FLASH CARD STUDY API",
+    description="I think you know how flash cards work"
+    version="0.0.1",
+    lifespan=lifespan,
+)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def register(body: RegisterBody):
+    key = create_api_key(body.name)
+    return {
+        "api_key": key,
+        "message": "Save this it will vanish"
+    }
+
+
+
                             
