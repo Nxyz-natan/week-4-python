@@ -138,13 +138,228 @@ app.state.limiter = limiter
 
 
 @app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded Try again later!"},
+    )
+
+
+@app.post("/register")
 async def register(body: RegisterBody):
     key = create_api_key(body.name)
     return {
         "api_key": key,
-        "message": "Save this it will vanish"
+        "message": "Save this before it vanishes",
+    }
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.post("/decks", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def create_deck(request: Request, body: DeckBody, key_info=Depends(verify_api_key)):
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO decks (owner_key, name) VALUES (?, ?)",
+            (key_info["key"], body.name),
+        )
+        conn.commit()
+        deck_id = cur.lastrowid
+    finally:
+        conn.close()
+    return {"id": deck_id, "name": body.name}
+
+
+@app.get("/decks", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def list_decks(request: Request, key_info=Depends(verify_api_key)):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, created_at FROM decks WHERE owner_key = ? ORDER BY id",
+            (key_info["key"],),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+
+
+@app.get("/decks/{deck_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def get_deck(request: Request, deck_id: int, key_info=Depends(verify_api_key)):
+    conn = get_connection()
+    try:
+        deck = conn.execute(
+            "SELECT id, name, created_at FROM decks WHERE id = ? AND owner_key = ?",
+            (deck_id, key_info["key"]),
+        ).fetchone()
+        if deck is None:
+            raise HTTPException(status_code=404, detail="Deck not found")
+        cards = conn.execute(
+            "SELECT id, front, back, due_at, interval_days, ease FROM cards WHERE deck_id = ? ORDER BY id",
+            (deck_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"deck": dict(deck), "cards": [dict(c) for c in cards]}
+                            
+
+
+
+@app.delete("/decks/{deck_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit("10/minute")
+async def delete_deck(request: Request, deck_id: int, key_info=Depends(verify_api_key)):
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM decks WHERE id = ? AND owner_key = ?",
+            (deck_id, key_info["key"]),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail= "Deck not found")
+    finally:
+        conn.close()
+    return {"deleted": deck_id}
+
+
+
+
+@app.post("/decks/{deck_id}/cards", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def add_card(
+    request: Request,
+    deck_id: int,
+    body: CardBody,
+    key_info=Depends(verify_api_key),
+):
+    conn = get_connection()
+    try:
+        deck = conn.execute(
+            "SELECT id FROM decks WHERE id = ? AND owner_key = ?",
+            (deck_id, key_info["key"]),
+        ).fetchone()
+        if deck is None:
+            raise HTTPException(status_code=404, detail="Deck not found")
+        cur = conn.execute(
+            "INSERT INTO cards (deck_id, front, back) VALUES (?, ?, ?)",
+            (deck_id, body.front, body.back),
+        )
+        conn.commit()
+        card_id = cur.lastrowid
+    finally:
+        conn.close()
+    return {"id": card_id, "front": body.front, "back": body.back}
+
+
+
+@app.get("/decks/{deck_id}/study", dependencies=[Depends(verify_api_key)])
+@limiter.limit("10/minute")
+async def study_deck(
+    request: Request,
+    deck_id: int,
+    limit: int = Query(5, ge=1, le=20),
+    key_info=Depends(verify_api_key),
+):
+    conn = get_connection()
+    try:
+        deck = conn.execute(
+            "SELECT id FROM decks WHERE id = ? AND owner_key = ?",
+            (deck_id, key_info["key"]),
+        ).fetchone()
+        if deck is None:
+            raise HTTPException(status_code=404, detail="Deck not found")
+        rows = conn.execute(
+            """
+            SELECT id, front, back, due_at, interval_days, ease
+            FROM cards
+            WHERE deck_id = ? AND due_at <= datetime('now')
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (deck_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"deck_id": deck_id, "due": [dict(r) for r in rows], "count": len(rows)}
+
+
+
+@app.post("/cards/{card_id}/rate", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def rate_card(
+    request: Request,
+    card_id: int,
+    body: RateBody,
+    background_tasks: BackgroundTasks,
+    key_info= Depends(verify_api_key),
+):
+    conn = get_connection()
+    try:
+        card = conn.execute(
+            """
+            SELECT c.id, c.deck_id, c.interval_days, c.ease
+            FROM cards c
+            JOIN decks d ON d.id = c.deck_id
+            WHERE c.id =  ? AND d.owner_key =  ?
+            """,
+            (card_id, key_info["key"]),
+        ).fetchone()
+        if card is None:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        interval = card["interval_days"]
+        ease = card["ease"]
+        rating = body.rating
+
+        if rating <= 2:
+            interval = 1
+            ease = max(1.3, ease - 0.2)
+            minutes = 10 if rating == 1 else 60 * 24
+            due_at = (
+                datetime.datetime.utcnow() + datetime.timedelta(minutes=minutes)
+            ).isoformat(timespec="seconds")
+        else:
+            interval = max(1, round((interval if interval else 1) * ease))
+            ease = min(3.0, ease + (0.1 if rating == 4 else 0.0))
+            due_at = (
+                datetime.datetime.utcnow() + datetime.timedelta(days=interval)
+            ).isoformat(timespec="seconds")
+
+        conn.execute(
+            "UPDATE cards SET due_at = ?, interval_days = ?, ease = ? WHERE id = ?",
+            (due_at, interval, ease, card_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    background_tasks.add_task(log_rating, card_id, rating, key_info["key"])
+    background_tasks.add_task(update_deck_stats, card["deck_id"])
+
+    return {
+        "card_id": card_id,
+        "rating": rating,
+        "next_due_at": due_at,
+        "new_interval_days": interval,
+        "new_ease": round(ease, 3),
     }
 
 
+def main():
+    import uvicorn
+    uvicorn.run(
+        "resolution_week4_nxyz109.main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,
+    )
 
-                            
+
+if __name__ == "__main__":
+    main()
